@@ -111,3 +111,27 @@ Read this file at the start of every session. Append key decisions, discoveries,
 - **Data facts (2026-09-30):** 183 apps; status only pending/pending_sa_confirmation/approved (0 declined rows), so approval_rate reads 100%. `loan_type` is mixed case in the DB (lowercase it). The `tier` 'declined' band (44 rows) is a score band, not a declined status.
 - [ASSUMPTION] In-memory aggregation is fine at ~200 rows; move to SQL views/RPC past ~10k.
 - **Ops:** 7 test applications deleted with their files (archive `archived-test-applications-2026-09-30.json`). **Ralph Roque (CI officer) deactivated** (`is_active=false`, resigned). CI has no per-officer assignment (shared queue; `notifyTeamByRole('ci_officer')` emails all active CI officers), so nothing needed reassigning. His 110 completed assessments keep `interviewer='Rafael Roque'` as the audit record.
+
+---
+
+## 2026-10-12 — Weekly health check (branch `claude/gifted-mayer-eu5bey`)
+
+- **Infra (Railway MCP) — GREEN.** Deploy `SUCCESS` and stable since 2026-09-30 (commit `0f3b704`, HEAD of `main`, reporting endpoints #7). Service `loan-backend` online, 1/1 replica, 0 crashes, 0 failed deployments over 7d. One staged `EnvironmentPatch` from 2026-06-10 with **empty** changes sits in `pendingWork` — harmless dangling stage, not blocking.
+- **Reliability — GREEN.** HTTP 5xx error rate **0%** over 7 days (982 requests, 0×5xx, 91×4xx = normal client rejections). Single handled log line on 10-05: `[pipeline] transition error: Invalid stage transition` — a correctly-rejected invalid transition (400), not a crash.
+- **Resources — GREEN, no limits approaching.** CPU ~0% (max 0.44 cores briefly), memory 0.74 GB / 8 GB (~9%, max 0.81 GB), disk 0 (no volume), network negligible.
+- **Tests — GREEN.** All suites pass: `e2e-flow` 157/157, `file-count-cap` 13/13, `reporting` 13/13. NOTE: local runs first failed with `Cannot find module './validate-limits'` because the **partially-tracked `node_modules/multer`** is stale/inconsistent with the 2.4.0 lockfile; a clean `npm install multer` fixed it. Production is unaffected (Railway Nixpacks rebuilds from the lockfile).
+- **Git/GitHub — GREEN.** Branch in sync with `main` (`0f3b704`), no open PRs, no open issues, no unmerged critical fixes.
+- **Ops item RESOLVED.** `CORS_ORIGINS` is now **set** on Railway (carried open since 2026-07-20 / 2026-09-21). `NODE_ENV` set (selects live Loandisk branch). `BASE_URL` not set but has a safe prod fallback in `services/email.js:385` — confirmation links OK.
+
+### ISSUE 1 — [CRITICAL+HIGH] 4 new npm vulnerabilities on the public request path (awaiting go-ahead)
+`npm audit` reports 4 vulns (1 critical, 3 high), all reachable, all **fixable via non-breaking `npm audit fix`** (no `--force`, all patch/minor within existing semver ranges):
+  - **proxy-addr** 2.0.7→2.0.8 (**CRITICAL**): IP spoofing via IPv4-mapped IPv6 trust subnet. `index.js:17` sets `trust proxy`, 1 and `express-rate-limit` keys on client IP → a spoofed `X-Forwarded-For` could bypass the 10/min cap on the public `/submit`, `/submit-group`, `/reports/problem` intake.
+  - **axios** 1.18.1→1.20.0 (HIGH): header injection, prototype-pollution → request socket hijack, redirect SSRF, NO_PROXY CIDR bypass. axios makes the outbound FinScore / Loandisk / ZeptoMail calls (`services/finscore.js`, `loandisk.js`, `email.js`, `routes/application.js`).
+  - **compression** 1.8.1→1.8.2 (HIGH): DoS via memory leak on premature response close; `compression()` is mounted globally (`index.js:13`).
+  - **sharp** 0.35.4→0.35.5 (HIGH): librsvg CVE-2026-96889 via malicious uploaded image; sharp decodes every upload in `services/compress.js`.
+  - **Remediation:** on this branch run `npm audit fix`, smoke-test `services/compress.js` + the 3 test suites, then merge to `main` (auto-deploys, no test gate). Same class/path as the 2026-09-23 fix (#4). **Not applied — awaiting go-ahead.**
+
+### ISSUE 2 — [LOW / hygiene] node_modules still partially tracked (847 files), now drifting
+`node_modules/` is in `.gitignore` yet 847 files remain tracked, and they are now inconsistent with the lockfile (stale `multer` broke local test runs, see above). Production is safe (Nixpacks ignores committed node_modules), but the drift is a correctness/confusion hazard and is the long-standing follow-up flagged on 2026-09-23. **Remediation:** `git rm -r --cached node_modules && git commit` to stop tracking it. Low priority, not urgent. Not applied — awaiting go-ahead.
+
+- **Next step per task:** on go-ahead for the fix, run backend UAT via Postman MCP (reuse the 2026-09-23 "Dependency Security UAT" collection shape in workspace `c83730a7…`: SAFE malformed-input-rejected-cleanly folder + commit-SHA assertion; side-effecting folder staging-only).
