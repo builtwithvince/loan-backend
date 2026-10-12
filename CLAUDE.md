@@ -63,8 +63,9 @@ middleware/
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/api/application/submit` | None | Single-member loan application |
-| POST | `/api/application/submit-group` | None | Group/SBL multi-member application |
+| POST | `/api/application/submit` | `X-Apply-Passcode` | Single-member loan application |
+| POST | `/api/application/submit-group` | `X-Apply-Passcode` | Group/SBL multi-member application |
+| POST | `/api/application/access` | `X-Apply-Passcode`, 10/15min | Checks the staff access code for the Apply pop-up |
 | POST | `/api/auth/login` | None | Login → JWT |
 | POST | `/api/auth/logout` | Bearer JWT | Logout |
 | GET | `/api/auth/me` | Bearer JWT | Current user info |
@@ -116,6 +117,7 @@ ZEPTO_FROM_EMAIL          # Sender email address
 ZEPTO_FROM_NAME           # Sender display name (defaults to "GR8 Lending")
 BASE_URL                  # Backend URL for confirmation links
 OWNER_EMAIL               # Receives problem reports
+APPLY_PASSCODE            # Shared staff access code for /submit + /submit-group (X-Apply-Passcode). Unset in production = submits refused (503)
 ```
 
 ## Scoring Logic
