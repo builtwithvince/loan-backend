@@ -27,6 +27,17 @@ const submitLimiter = rateLimit({
   message: { status: 'error', message: 'Too many submissions. Please wait a minute and try again.' }
 })
 
+// The Apply pop-up checks the staff access code here before the form opens.
+// Tighter window than submit: this endpoint exists only to answer "is this code
+// right", so it is the one worth guessing against.
+const accessLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { status: 'error', code: 'rate_limited', message: 'Too many attempts. Please wait 15 minutes and try again.' }
+})
+
 const searchLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 30,
@@ -72,7 +83,7 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Apply-Passcode']
 }))
 app.use(express.json())
 
@@ -101,10 +112,16 @@ app.get('/', (req, res) => {
 })
 
 const applicationRouter = require('./routes/application')
+const { requireApplyPasscode } = require('./middleware/applyPasscode')
 // Apply submit limiter only to the public submit endpoints. Test/admin
-// helpers under /api/application/test-* stay unthrottled.
-app.use('/api/application/submit', submitLimiter)
-app.use('/api/application/submit-group', submitLimiter)
+// helpers under /api/application/test-* stay unthrottled. The access-code gate
+// runs before the router, so a refused submit never parses uploads or calls
+// FinScore.
+app.use('/api/application/submit', submitLimiter, requireApplyPasscode)
+app.use('/api/application/submit-group', submitLimiter, requireApplyPasscode)
+app.post('/api/application/access', accessLimiter, requireApplyPasscode, (req, res) => {
+  res.json({ status: 'ok' })
+})
 app.use('/api/application', applicationRouter)
 
 const borrowersRouter = require('./routes/borrowers')
