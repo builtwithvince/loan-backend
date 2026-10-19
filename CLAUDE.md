@@ -148,7 +148,7 @@ Age requirement: 21–65 for all types. Mobile format: `09XXXXXXXXX`.
    - *FinScore fast-path* (`finscore_attributed=true`): borrower reuse **plus** the source row's `submitted_at` within 90 days **and** a usable prior FinScore. Skips the FinScore call and copies `finscore_raw` / `finscore_normalized`; `attributed_final_score` records the prior composite for audit.
 
    Refused fast-path reasons (logged, borrower reuse still applies): `score_outside_recency_window`, `prior_finscore_unusable` (manual-override source), `decline_postdates_approval`, `prior_submitted_at_unreadable`. A prior decline still raises `prior_decline_flag` for CI, which now sees it via `CI_FIELDS`.
-2. Pipeline stages: `sales_officer` → `verifier` → `ci_officer` → `approver` → `loan_processing_officer` (with email automation on each transition). `declined` is a terminal branch from `approver`. Backward returns: only `verifier` → `sales_officer` is permitted.
+2. Pipeline stages: `sales_officer` → `verifier` → `ci_officer` → `approver` → `loan_processing_officer` (with email automation on each transition). `declined` is a terminal branch from `approver`. `withdrawn` (decision 022) is a neutral terminal branch from any pre-approval stage: no prior-decline flag, frees the phone. Backward returns: only `verifier` → `sales_officer` is permitted.
 3. CI agent conducts interview → submits CI score → auto-advances to approver stage
 4. Admin reviews → final score + tier calculated (with reapplication bonus if applicable)
 5. Admin approves → borrower created in Loandisk (renewals reuse the linked borrower instead) → files transferred from Supabase to Loandisk via presigned S3 URLs on **every** approval, renewals included (decision 019)

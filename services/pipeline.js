@@ -12,7 +12,8 @@ const VALID_STAGES = [
   'ci_officer',
   'approver',
   'loan_processing_officer',
-  'declined'
+  'declined',
+  'withdrawn'
 ];
 
 // ---------------------------------------------------------------------------
@@ -324,7 +325,46 @@ async function executeLoandiskApproval(application, user, meta = {}) {
 // when allowed, before transitionStage writes the new stage to the DB.
 // ---------------------------------------------------------------------------
 
+// Withdrawn: the applicant dropped out (left their group, stopped responding).
+// A neutral end state (decision 022): unlike 'declined' it never raises
+// prior_decline_flag on a later application, and it frees the phone from the
+// pending-phone unique index so the person can apply again. Allowed from every
+// stage before approval, never once a Loandisk push has started.
+// [ASSUMPTION] Same roles as decline.
+const withdrawGuard = async (application, user, meta) => {
+  const withdrawRoles = ['admin', 'super_admin', 'approver'];
+  const userRoles = user.roles || [];
+  if (!withdrawRoles.some((r) => userRoles.includes(r))) {
+    return { allowed: false, reason: 'Only admins or approvers can withdraw applications' };
+  }
+
+  const reason = meta && typeof meta.withdraw_reason === 'string' ? meta.withdraw_reason.trim() : '';
+  if (!reason) {
+    return { allowed: false, reason: 'Withdraw reason is required' };
+  }
+
+  if (application.loandisk_loan_id || application.loan_push_claimed_at) {
+    return { allowed: false, reason: 'Application has already been pushed to Loandisk and cannot be withdrawn' };
+  }
+
+  const { error: updateError } = await supabase
+    .from('applications')
+    .update({ status: 'withdrawn' })
+    .eq('id', application.id);
+
+  if (updateError) {
+    throw new Error('Failed to update application to withdrawn: ' + updateError.message);
+  }
+
+  return { allowed: true, reason: 'Application withdrawn' };
+};
+
 const TRANSITION_GUARDS = {
+
+  'sales_officer->withdrawn': withdrawGuard,
+  'verifier->withdrawn': withdrawGuard,
+  'ci_officer->withdrawn': withdrawGuard,
+  'approver->withdrawn': withdrawGuard,
 
   'sales_officer->verifier': async (application, user) => {
     const permitted = ['sales_officer', 'admin', 'super_admin'];

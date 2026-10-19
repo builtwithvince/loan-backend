@@ -583,6 +583,53 @@ async function run() {
   }
 
   // -----------------------------------------------------------------------
+  section('PIPELINE — withdrawn (neutral end state, frees the phone)');
+  // -----------------------------------------------------------------------
+  {
+    const admin = { id: userId('admin'), roles: ['admin'], full_name: 'a' };
+    FINSCORE['09179000001'] = { score: 540, normalized: 80, noScore: false };
+    await postForm('/api/application/submit', validForm({ mobile: '09179000001' }));
+    const wRow = db.applications.find((a) => a.phone === '09179000001' && a.status === 'pending');
+
+    await expectThrow('withdraw blocked for verifier role',
+      () => transitionStage(wRow.id, 'withdrawn', { id: userId('verifier'), roles: ['verifier'], full_name: 'v' }, { withdraw_reason: 'left group' }),
+      'Only admins or approvers');
+    await expectThrow('withdraw requires a reason',
+      () => transitionStage(wRow.id, 'withdrawn', admin, { withdraw_reason: '   ' }),
+      'reason is required');
+
+    const w = await transitionStage(wRow.id, 'withdrawn', admin, { withdraw_reason: 'Left the SBL group' });
+    check('withdraw → stage + status withdrawn', w.stage === 'withdrawn' && wRow.status === 'withdrawn', JSON.stringify({ s: w.stage, st: wRow.status }));
+    const last = wRow.stage_history[wRow.stage_history.length - 1];
+    check('withdraw reason recorded in stage_history', last.to === 'withdrawn' && last.meta.withdraw_reason === 'Left the SBL group', JSON.stringify(last));
+
+    await expectThrow('withdrawn is final (no move back)',
+      () => transitionStage(wRow.id, 'approver', admin, {}),
+      'Backward');
+
+    const again = await postForm('/api/application/submit', validForm({ mobile: '09179000001' }));
+    check('same phone can apply again after withdraw', again.body.status === 'success', JSON.stringify(again.body));
+    const newRow = db.applications.find((a) => a.phone === '09179000001' && a.status === 'pending');
+    check('withdrawn is not a decline (no prior_decline_flag)', newRow.prior_decline_flag === false, String(newRow.prior_decline_flag));
+
+    const adj = await jsonReq('PATCH', `/api/admin/applications/${wRow.id}/approve`, { adjusted_amount: 12345 }, adminSecretH);
+    check('adjusted-terms approve on withdrawn row → 400', adj.status === 400, JSON.stringify(adj));
+    check('withdrawn row not resurrected by approve', wRow.status === 'withdrawn', wRow.status);
+
+    // Approved (Loandisk-pushed) rows can't be withdrawn.
+    db.applications.push({ id: newId(), reference_id: 'GR8-W-APPROVED', phone: '09179000002', status: 'approved', stage: 'loan_processing_officer', loandisk_loan_id: 'L-1', stage_history: [] });
+    const approvedId = db.applications[db.applications.length - 1].id;
+    await expectThrow('withdraw from loan_processing_officer blocked',
+      () => transitionStage(approvedId, 'withdrawn', admin, { withdraw_reason: 'x' }),
+      'Invalid stage transition');
+    db.applications.push({ id: newId(), reference_id: 'GR8-W-CLAIMED', phone: '09179000003', status: 'pending', stage: 'approver', loan_push_claimed_at: new Date().toISOString(), stage_history: [] });
+    const claimedId = db.applications[db.applications.length - 1].id;
+    await expectThrow('withdraw blocked while a Loandisk push is claimed',
+      () => transitionStage(claimedId, 'withdrawn', admin, { withdraw_reason: 'x' }),
+      'pushed to Loandisk');
+  }
+
+  // -----------------------------------------------------------------------
   section('PIPELINE — verifier→sales_officer rework return');
   // -----------------------------------------------------------------------
   {

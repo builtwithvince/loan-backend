@@ -92,10 +92,11 @@ function loanType(row) {
   return String(row.loan_type || 'unknown').toLowerCase();
 }
 
-// Outcome bucket for a row: approved | declined | pending.
+// Outcome bucket for a row: approved | declined | withdrawn | pending.
 function outcomeOf(row) {
   if (row.status === 'approved') return 'approved';
   if (row.status === 'declined' || row.stage === 'declined') return 'declined';
+  if (row.status === 'withdrawn' || row.stage === 'withdrawn') return 'withdrawn';
   return 'pending';
 }
 
@@ -104,7 +105,8 @@ function outcomeOf(row) {
 // path reuses reviewed_at as declined_at, services/pipeline.js).
 function decisionAt(row) {
   const outcome = outcomeOf(row);
-  if (outcome === 'pending') return null;
+  // A withdrawal is not a lending decision, so it has no decision date.
+  if (outcome === 'pending' || outcome === 'withdrawn') return null;
   const target = outcome === 'approved' ? 'loan_processing_officer' : 'declined';
   const hit = (row.stage_history || []).find(h => h && h.to === target && h.at);
   if (hit) return hit.at;
@@ -230,7 +232,7 @@ function buildOverview({ applications, staff, period, now = new Date() }) {
 
   // Applications over time, split by current outcome.
   const overTime = Object.fromEntries(
-    range.buckets.map(b => [b, { bucket: b, approved: 0, pending: 0, declined: 0 }]),
+    range.buckets.map(b => [b, { bucket: b, approved: 0, pending: 0, declined: 0, withdrawn: 0 }]),
   );
   for (const r of submitted) {
     const b = overTime[bucketOf(r.submitted_at, range.granularity)];
@@ -265,6 +267,7 @@ function buildOverview({ applications, staff, period, now = new Date() }) {
       approved: 0,
       declined: 0,
       pending: 0,
+      withdrawn: 0,
     };
     so[key][outcomeOf(r)] += 1;
   }
