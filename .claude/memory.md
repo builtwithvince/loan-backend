@@ -111,3 +111,33 @@ Read this file at the start of every session. Append key decisions, discoveries,
 - **Data facts (2026-09-30):** 183 apps; status only pending/pending_sa_confirmation/approved (0 declined rows), so approval_rate reads 100%. `loan_type` is mixed case in the DB (lowercase it). The `tier` 'declined' band (44 rows) is a score band, not a declined status.
 - [ASSUMPTION] In-memory aggregation is fine at ~200 rows; move to SQL views/RPC past ~10k.
 - **Ops:** 7 test applications deleted with their files (archive `archived-test-applications-2026-09-30.json`). **Ralph Roque (CI officer) deactivated** (`is_active=false`, resigned). CI has no per-officer assignment (shared queue; `notifyTeamByRole('ci_officer')` emails all active CI officers), so nothing needed reassigning. His 110 completed assessments keep `interviewer='Rafael Roque'` as the audit record.
+
+---
+
+## 2026-10-19 — Weekly health check (branch `claude/gifted-mayer-btukw3`)
+
+- **Infra (Railway MCP):** deploy `SUCCESS`/stable since 2026-10-12 (commit `04d24f9`, HEAD of `main` = PR #8 apply-passcode gate). Service `loan-backend` online, us-west2. No crashes.
+- **Reliability:** HTTP error rate **0%** over 7d (1824 requests, 0×5xx, 133×4xx normal client rejections). Worst bucket 0% 5xx.
+- **Resources — all idle:** CPU ~0% (avg 0.0003 cores, max 0.78 transient), memory avg 0.22 GB / peak 0.77 GB of 8 GB (~10%), disk 0, network negligible. No limits approaching.
+- **Git/GitHub:** no open PRs, no open issues. Branch started fresh from `origin/main` (0/0 ahead/behind).
+- **Tests:** pure-logic suites pass (`apply-passcode` 6/6, `reporting` 13/13). `e2e-flow` + `file-count-cap` can't run in this fresh clone — `node_modules` only partially tracked, `@supabase/supabase-js` not installed (needs `npm install`). Not a code regression. `npm test` is still a placeholder (`exit 1`); real suites run via `node tests/<f>.test.js`.
+- **RESOLVED since last check:** `CORS_ORIGINS` is now **set** in production (closes the ops item carried since 2026-07-20 / 2026-09-21). `APPLY_PASSCODE` confirmed **set** → the #8 submit-gate is live and not 503'ing legit submits.
+
+### ISSUE 1 — dependency vulns (`npm audit`: 4 vulns, 1 critical + 3 high). New advisories since the 2026-09-23 fix.
+  - **proxy-addr (CRITICAL, transitive via express):** IP spoofing via IPv4-mapped IPv6 trust subnet (GHSA-jqcg-44mw-7w3h). Relevant — `app.set('trust proxy', 1)` + `express-rate-limit` key off client IP, so spoofing could bypass the per-IP caps on `/submit` (10/min) and `/access` (10/15min), the FinScore cost-control gate.
+  - **axios 1.18.1→1.20.0 (HIGH, direct):** prototype-pollution gadgets, SSRF (maxRedirects:0 not enforced by fetch adapter), ReDoS, header injection. Used on every external call (FinScore/Loandisk/ZeptoMail).
+  - **compression 1.8.1→1.8.2 (HIGH, direct):** DoS via memory leak on premature response close (GHSA-vc2v-76pw-4v95). `compression()` is global on all responses (`index.js:13`).
+  - **sharp 0.34→<0.35.5 (HIGH, direct):** librsvg CVE-2026-96889 via malicious uploaded image on the public intake path.
+  - **Remediation:** `npm audit fix` clears all 4 — every bump is within the existing `package.json` semver ranges (axios ^1.13.6, compression ^1.8.1, sharp ^0.35.4; proxy-addr transitive), no `--force`. Smoke-test `services/compress.js` under sharp 0.35.5 + confirm rate-limit still keys correctly, then merge to `main` (auto-deploys, no test gate). **Not applied — awaiting go-ahead.**
+
+### ISSUE 2 — Loandisk group/SBL borrower address mapping gap (medium; data quality, not a crash).
+  - Prod logs (2026-10-14, recurring) show paired warnings: `[loandisk] payload missing required-non-empty fields: borrower_address` + `[loandisk] unmapped form keys (mapper skipped): zip, position, groupName, is_leader, houseStreet, member_index, total_members, totalLoanAmount, base_reference_id`.
+  - Root cause: `pickAddress(fd)` in `services/loandisk.js:175` reads street from `presentHouseStreet || address || permanentHouseStreet` and zip from `presentZip || zipcode || permanentZip`. Group/SBL per-member `form_data` uses a **flat** `houseStreet` + `zip` shape (none of those keys), so `street`/`zip` resolve to `''` and the Loandisk borrower is created with a **blank address + zip**. Same field-name-drift class as 2026-04-28 Issues 2/4, whose fix only covered single-member keys.
+  - It's `console.warn` (doesn't block, hence 0% 5xx), but every group/SBL borrower reaches Loandisk with no street/zip.
+  - **Remediation:** add `fd.houseStreet` to the street fallback and `fd.zip` to the zip fallback in `pickAddress()` (and add both to `CONSUMED_KEYS` to silence the drift detector). Verify against a real group-member `form_data` payload. **Not applied — awaiting go-ahead.**
+
+### FYI (not issues)
+  - `[upload] rejected … Request aborted` (2026-10-18): a real SBL submission ('Lumibao Group', content_length 74 MB, 18 files) aborted mid-upload. "Request aborted" = client disconnect (likely a slow mobile link on a 74 MB total), not a backend fault; rejection logging (added `50be3cc`) working as designed. Possible lost application — worth an ops heads-up to the SO.
+  - `[pipeline] transition error: Invalid stage transition` (2026-10-17, single): handled gracefully (4xx), normal guard behavior.
+  - `RESEND_API_KEY` is present in Railway alongside the `ZEPTO_*` vars — possible email-provider migration or a leftover. CLAUDE.md still documents ZeptoMail. Flag for awareness.
+  - Non-security outdated: express 5.2.1→5.3.0 (minor), dotenv 17→18 (major). Not urgent.
