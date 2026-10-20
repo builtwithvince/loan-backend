@@ -80,6 +80,7 @@ class Query {
   delete() { this._op = 'delete'; return this; }
   eq(c, v) { this._filters.push((r) => r[c] === v); return this; }
   is(c, v) { this._filters.push((r) => (r[c] ?? null) === (v ?? null)); return this; }
+  in(c, arr) { this._filters.push((r) => arr.includes(r[c])); return this; }
   contains(c, arr) {
     this._filters.push((r) => Array.isArray(r[c]) && arr.every((a) => r[c].includes(a)));
     return this;

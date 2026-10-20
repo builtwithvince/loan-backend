@@ -93,6 +93,15 @@ function safePathSegment(value) {
   return cleaned || 'file'
 }
 
+// First row per phone from rows already ordered newest first.
+function latestByPhone(rows) {
+  const byPhone = new Map()
+  for (const row of rows || []) {
+    if (!byPhone.has(row.phone)) byPhone.set(row.phone, row)
+  }
+  return byPhone
+}
+
 // Block the unauthenticated /test-* helper routes in production. They invoke
 // real Loandisk/FinScore/email side effects and a destructive DB delete, so
 // they must never be reachable on the live deploy. Available only when
@@ -506,59 +515,11 @@ router.post('/submit-group', handleUpload, async (req, res) => {
       return res.status(200).json({ status: 'declined', reasons: [`This loan supports at most ${MAX_GROUP_MEMBERS} members`] })
     }
 
-    // Check for existing pending application with leader's phone
     const leader = members[0]
-    // M5: leader.mobile drives the dedupe/prior-decline lookups below. When
-    // absent, .eq('phone', undefined) matches nothing and the dedupe is
-    // silently bypassed, persisting a row with a null phone. Require it.
+    // M5: a missing leader mobile would persist a row with a null phone, which
+    // the pending-phone unique index does not cover. Require it.
     if (!leader || !leader.mobile || !/^09\d{9}$/.test(leader.mobile)) {
       return res.status(200).json({ status: 'declined', reasons: ['Group leader must have a valid mobile number (09XXXXXXXXX)'] })
-    }
-
-    // Independent pre-check reads batched in one round trip (perf review
-    // finding 5) — same shape as /submit above.
-    const [soCheckRes, existingRes, priorDeclinedRes] = await Promise.all([
-      req.body.sales_officer_id
-        ? supabase
-            .from('admin_users')
-            .select('id')
-            .eq('id', req.body.sales_officer_id)
-            .contains('roles', ['sales_officer'])
-            .eq('is_active', true)
-            .maybeSingle()
-        : Promise.resolve({ data: null }),
-      supabase
-        .from('applications')
-        .select('id')
-        .eq('phone', leader.mobile)
-        .eq('status', 'pending')
-        .maybeSingle(),
-      supabase
-        .from('applications')
-        .select('reference_id')
-        .eq('phone', leader.mobile)
-        .eq('status', 'declined')
-        .order('submitted_at', { ascending: false })
-        .limit(1)
-        .maybeSingle()
-    ])
-
-    // Validate sales_officer_id if provided
-    const assigned_sales_officer = soCheckRes.data ? soCheckRes.data.id : null;
-
-    if (existingRes.data) {
-      return res.status(200).json({
-        status: 'error',
-        message: 'An application for this mobile number is already under review. Please wait for our team to contact you.'
-      })
-    }
-
-    // Prior decline detection for group leader
-    let prior_decline_flag = false
-    let prior_decline_reference = null
-    if (priorDeclinedRes.data) {
-      prior_decline_flag = true
-      prior_decline_reference = priorDeclinedRes.data.reference_id
     }
 
     const perMemberLimits = {
@@ -600,15 +561,90 @@ router.post('/submit-group', handleUpload, async (req, res) => {
       if (!member.mobile || !/^09\d{9}$/.test(member.mobile)) {
         memberErrors.push(`Member ${i + 1}: A valid mobile number (09XXXXXXXXX) is required`)
       }
+      // Two rows with one phone would trip the pending-phone unique index on
+      // insert and surface as a misleading "already under review".
+      const firstWithPhone = members.findIndex(m => m.mobile === member.mobile)
+      if (member.mobile && firstWithPhone !== i) {
+        memberErrors.push(`Member ${i + 1}: Same mobile number as Member ${firstWithPhone + 1}`)
+      }
     })
     if (memberErrors.length > 0) {
       return res.status(200).json({ status: 'declined', reasons: memberErrors })
     }
 
-    // FinScore — score each member individually in parallel
+    // Every member's phone is checked, not just the leader's: each member gets
+    // their own row, so any member with a pending application blocks the
+    // insert. Group composition changes between loans, so history is resolved
+    // per member, the same way /submit resolves a single applicant.
+    const phones = members.map(m => m.mobile)
+    const [soCheckRes, pendingRes, declinedRes, approvedRes] = await Promise.all([
+      req.body.sales_officer_id
+        ? supabase
+            .from('admin_users')
+            .select('id')
+            .eq('id', req.body.sales_officer_id)
+            .contains('roles', ['sales_officer'])
+            .eq('is_active', true)
+            .maybeSingle()
+        : Promise.resolve({ data: null }),
+      supabase
+        .from('applications')
+        .select('phone')
+        .in('phone', phones)
+        .eq('status', 'pending'),
+      supabase
+        .from('applications')
+        .select('phone, reference_id, submitted_at')
+        .in('phone', phones)
+        .eq('status', 'declined')
+        .order('submitted_at', { ascending: false }),
+      supabase
+        .from('applications')
+        .select('id, phone, reference_id, loandisk_borrower_id, finscore_raw, finscore_normalized, final_score, submitted_at')
+        .in('phone', phones)
+        .eq('status', 'approved')
+        .not('loandisk_borrower_id', 'is', null)
+        .order('submitted_at', { ascending: false })
+    ])
+    for (const r of [pendingRes, declinedRes, approvedRes]) {
+      if (r.error) throw r.error
+    }
+
+    // Validate sales_officer_id if provided
+    const assigned_sales_officer = soCheckRes.data ? soCheckRes.data.id : null
+
+    const pendingPhones = new Set((pendingRes.data || []).map(r => r.phone))
+    if (pendingPhones.size > 0) {
+      // Names come from this request's own payload, so nothing stored is disclosed.
+      const blocked = members
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => pendingPhones.has(m.mobile))
+        .map(({ m, i }) => `Member ${i + 1} (${`${m.firstName || ''} ${m.lastName || ''}`.trim()})`)
+      console.log(`[submit-group] refused: ${blocked.length} of ${members.length} members already have a pending application`)
+      return res.status(200).json({
+        status: 'error',
+        message: `An application is already under review for: ${blocked.join(', ')}. Remove them from this group, or wait for our team to contact you.`
+      })
+    }
+
+    const latestDeclined = latestByPhone(declinedRes.data)
+    const latestApproved = latestByPhone(approvedRes.data)
+    const nowMs = Date.now()
+    const memberHistory = members.map(m => ({
+      priorDecline: latestDeclined.get(m.mobile) || null,
+      renewal: evaluateRenewal(latestApproved.get(m.mobile) || null, latestDeclined.get(m.mobile) || null, nowMs)
+    }))
+
+    // FinScore — score each member individually in parallel, except members
+    // on the renewal fast-path, who carry their prior score (see /submit).
     const { getScore } = require('../services/finscore')
     const memberScores = await Promise.all(
       members.map(async (member, i) => {
+        const { renewal } = memberHistory[i]
+        if (renewal.canSkipFinScore) {
+          console.log(`[Group] member ${i} renewal fast-path — FinScore skipped, score attributed from`, renewal.sourceApplicationId)
+          return { finscore_raw: renewal.attributedFinscoreRaw, finscore_normalized: renewal.attributedFinscoreNormalized }
+        }
         try {
           const result = await getScore(member.mobile)
           console.log(`[Group] FinScore member ${i}:`, JSON.stringify(result))
@@ -671,6 +707,7 @@ router.post('/submit-group', handleUpload, async (req, res) => {
       const isLeader = i === 0
       const memberRef = isLeader ? base_reference_id : `${base_reference_id}-M${i}`
       const { finscore_raw, finscore_normalized } = memberScores[i]
+      const { priorDecline, renewal } = memberHistory[i]
       return {
         reference_id: memberRef,
         phone: member.mobile,
@@ -689,8 +726,15 @@ router.post('/submit-group', handleUpload, async (req, res) => {
         group_members: members,
         consent_agreed,
         consent_agreed_at,
-        prior_decline_flag: isLeader ? prior_decline_flag : false,
-        prior_decline_reference: isLeader ? prior_decline_reference : null,
+        prior_decline_flag: Boolean(priorDecline),
+        prior_decline_reference: priorDecline ? priorDecline.reference_id : null,
+        application_category: renewal.isRenewal ? 'renewal' : 'new',
+        linked_borrower_id: renewal.linkedBorrowerId,
+        renewal_source_application_id: renewal.sourceApplicationId,
+        finscore_attributed: renewal.canSkipFinScore,
+        attributed_final_score: renewal.attributedFinalScore,
+        renewal_source_submitted_at: renewal.sourceSubmittedAt,
+        renewal_source_reference_id: renewal.sourceReferenceId,
         documents_incomplete: upload_failures > 0
       }
     })
@@ -701,11 +745,11 @@ router.post('/submit-group', handleUpload, async (req, res) => {
 
     if (error) {
       // H7: concurrent submit slipped past the pending-phone check — the partial
-      // unique index rejects the duplicate leader phone with 23505.
+      // unique index rejects a duplicate member phone with 23505.
       if (error.code === '23505') {
         return res.status(200).json({
           status: 'error',
-          message: 'An application for this mobile number is already under review. Please wait for our team to contact you.'
+          message: 'An application for one of these members is already under review. Please wait for our team to contact you.'
         })
       }
       throw error

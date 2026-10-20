@@ -73,6 +73,7 @@ class Query {
   delete() { this._op = 'delete'; return this; }
   eq(c, v) { this._filters.push((r) => r[c] === v); return this; }
   is(c, v) { this._filters.push((r) => (r[c] ?? null) === (v ?? null)); return this; }
+  in(c, arr) { this._filters.push((r) => arr.includes(r[c])); return this; }
   contains(c, arr) {
     this._filters.push((r) => Array.isArray(r[c]) && arr.every((a) => r[c].includes(a)));
     return this;
@@ -541,6 +542,54 @@ async function run() {
     check('leader base ref + co-members suffixed -M{i}', leader && coMembers.length === 4, JSON.stringify({ leader: leader && leader.reference_id, co: coMembers.map((c) => c.reference_id) }));
     const zeroScoreMember = groupRows.find((r) => r.phone === '09181000004');
     check('member without FinScore → finscore_raw 0 fallback', zeroScoreMember.finscore_raw === 0, String(zeroScoreMember.finscore_raw));
+
+    // A co-member (not the leader) with a pending row blocks the group, and the
+    // message names that member.
+    const before = db.applications.length;
+    const blockedByMember = await postForm('/api/application/submit-group', {
+      loanType: 'sbl', totalLoanAmount: '40000', groupName: 'Blocked', paymentTerm: '12',
+      members: [member({ mobile: '09182000000' }), member({ mobile: '09182000001' }), member({ firstName: 'Ana', lastName: 'Cruz', mobile: '09181000002' })],
+    });
+    check('pending co-member → status error naming Member 3', blockedByMember.body.status === 'error' && blockedByMember.body.message.includes('Member 3 (Ana Cruz)') && !blockedByMember.body.message.includes('Member 1'), JSON.stringify(blockedByMember.body));
+    check('blocked group inserts nothing', db.applications.length === before, String(db.applications.length - before));
+
+    const dupPhone = await postForm('/api/application/submit-group', {
+      loanType: 'sbl', totalLoanAmount: '40000', groupName: 'Dup', paymentTerm: '12',
+      members: [member({ mobile: '09182000010' }), member({ mobile: '09182000010' })],
+    });
+    check('same phone twice in one group → declined, names both members', dupPhone.body.status === 'declined' && dupPhone.body.reasons.includes('Member 2: Same mobile number as Member 1'), JSON.stringify(dupPhone.body));
+  }
+
+  // -----------------------------------------------------------------------
+  section('SUBMIT-GROUP — renewal and decline history resolved per member');
+  // -----------------------------------------------------------------------
+  {
+    const member = (over = {}) => ({ firstName: 'R', lastName: 'Y', dateOfBirth: '1990-01-01', loanAmount: '20000', email: 'r@test.com', ...over });
+    const recent = new Date(Date.now() - 10 * 86400000).toISOString();
+    const stale = new Date(Date.now() - 120 * 86400000).toISOString();
+    db.applications.push(
+      { id: newId(), reference_id: 'GR8-GRP-FAST', phone: '09183000001', status: 'approved', loandisk_borrower_id: 'LD-G1', finscore_raw: 555, finscore_normalized: 85, final_score: 88, submitted_at: recent },
+      { id: newId(), reference_id: 'GR8-GRP-STALE', phone: '09183000002', status: 'approved', loandisk_borrower_id: 'LD-G2', finscore_raw: 540, finscore_normalized: 80, final_score: 86, submitted_at: stale },
+      { id: newId(), reference_id: 'GR8-GRP-DECL', phone: '09183000003', status: 'declined', submitted_at: recent }
+    );
+    FINSCORE['09183000001'] = { score: 333, normalized: 11, noScore: false }; // must NOT be used: fast-path
+    FINSCORE['09183000002'] = { score: 520, normalized: 73, noScore: false };
+
+    // New leader; renewing members joined a different group than before.
+    const res = await postForm('/api/application/submit-group', {
+      loanType: 'sbl', totalLoanAmount: '80000', groupName: 'RenewMix', paymentTerm: '12',
+      members: [member({ mobile: '09183000000' }), member({ mobile: '09183000001' }), member({ mobile: '09183000002' }), member({ mobile: '09183000003' })],
+    });
+    check('mixed renewal group → success', res.body.status === 'success', JSON.stringify(res.body));
+    const rowFor = (p) => db.applications.find((a) => a.phone === p && a.status === 'pending');
+    const lead = rowFor('09183000000');
+    const fast = rowFor('09183000001');
+    const slow = rowFor('09183000002');
+    const decl = rowFor('09183000003');
+    check('new leader → category new, no link', lead.application_category === 'new' && lead.linked_borrower_id === null && lead.prior_decline_flag === false, JSON.stringify({ c: lead.application_category, l: lead.linked_borrower_id }));
+    check('recent approved member → renewal + fast-path score carried', fast.application_category === 'renewal' && fast.linked_borrower_id === 'LD-G1' && fast.finscore_attributed === true && fast.finscore_raw === 555 && fast.renewal_source_reference_id === 'GR8-GRP-FAST', JSON.stringify({ c: fast.application_category, a: fast.finscore_attributed, r: fast.finscore_raw }));
+    check('stale approved member → renewal, FinScore re-run', slow.application_category === 'renewal' && slow.linked_borrower_id === 'LD-G2' && slow.finscore_attributed === false && slow.finscore_raw === 520, JSON.stringify({ a: slow.finscore_attributed, r: slow.finscore_raw }));
+    check('declined co-member → prior_decline_flag on their own row', decl.prior_decline_flag === true && decl.prior_decline_reference === 'GR8-GRP-DECL' && decl.application_category === 'new', JSON.stringify({ f: decl.prior_decline_flag, r: decl.prior_decline_reference }));
   }
 
   // -----------------------------------------------------------------------
