@@ -383,12 +383,15 @@ router.patch('/applications/:id/override', requireRole('admin', 'super_admin', '
 
     const { data: app, error: fetchError } = await supabase
       .from('applications')
-      .select('finscore_raw, stage_history')
+      .select('finscore_raw, stage_history, status')
       .eq('id', req.params.id)
       .single()
 
     if (fetchError || !app) {
       return res.status(404).json({ error: 'Application not found' })
+    }
+    if (app.status === 'withdrawn') {
+      return res.status(400).json({ error: 'Application has been withdrawn' })
     }
 
     // Gate: override is only for a missing FinScore. A present, non-zero score
@@ -514,6 +517,9 @@ router.patch('/applications/:id/approve', requireRole('admin', 'super_admin', 'a
 
       if (fetchErr || !current) {
         return res.status(404).json({ error: 'Application not found' })
+      }
+      if (current.status === 'withdrawn') {
+        return res.status(400).json({ error: 'Application has been withdrawn' })
       }
 
       const origAmount = Number(current.loan_amount)

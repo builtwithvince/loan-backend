@@ -330,3 +330,19 @@ Set **only** on the FinScore fast-path. A renewal that re-ran FinScore measured 
 **Why:** the four send sites looked up the SO by id without checking `is_active`, so any application still pointing at a departed officer would email borrower PII to an inbox the company no longer controls. Reassignment fixes the data once. This makes the next departure safe without SQL.
 
 **Not done:** the application is not reassigned automatically. The fallback sends emails to the active SOs; ownership changes only through `assign-sales-officer`. Confirmation tokens are still not bound to an SO, so every recipient gets the same single-use pair, and the first click wins.
+
+---
+
+## 022 — `withdrawn`: a neutral end state for applicants who drop out (2026-10-19)
+
+**Trigger:** SBL renewers were refused with "already under review". Rows for members who left a group, and whole groups never decided in the system, stayed `status='pending'` forever. The pending-phone unique index (014) then blocked those people from applying again.
+
+**Decision (operator):** dropped applicants are withdrawn, never auto-declined. New terminal stage `withdrawn`, which sets `status='withdrawn'`:
+- `PATCH /api/pipeline/:id/transition { to_stage: 'withdrawn', meta: { withdraw_reason } }`. The reason is required and recorded in `stage_history`.
+- Allowed from `sales_officer`, `verifier`, `ci_officer` and `approver` (including `pending_sa_confirmation`). Refused once `loandisk_loan_id` or `loan_push_claimed_at` is set, and from `loan_processing_officer` or `declined`.
+- Roles: admin, super_admin, approver. These are the decline roles. [ASSUMPTION]
+- Unlike `declined`, it never sets `prior_decline_flag` on a later application, and renewal ignores it. The phone is freed at once.
+- Reporting: its own `withdrawn` bucket. It is not open and not a decision, so it has no effect on approval rate or turnaround.
+- `/approve` (adjusted terms), `/override` and the SO confirmation link refuse a withdrawn row, so it cannot be brought back.
+
+**Not done:** the same direct-write paths can still bring a `declined` row back. That gap was already there and is out of scope here.

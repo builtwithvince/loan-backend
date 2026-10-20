@@ -165,6 +165,12 @@ router.get('/:token', async (req, res) => {
       return res.status(500).send(errorPage());
     }
 
+    // A withdrawn application is closed; the link must not move it back to approver.
+    if (application.status === 'withdrawn') {
+      console.log('[confirm] Application withdrawn — confirmation ignored');
+      return res.status(410).send(invalidPage());
+    }
+
     // 4. Update so_decision + move stage to approver, appending history
     // atomically server-side (M6) so concurrent writers can't clobber the array.
     const now = new Date().toISOString();

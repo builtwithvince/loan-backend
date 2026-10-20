@@ -199,8 +199,19 @@ test('buildOverview 30d: KPIs, mix, pipeline, SO performance', () => {
   assert.equal(o.so_performance[0].officer, 'Troy');
   assert.equal(o.so_performance[0].approved + o.so_performance[0].pending, 2);
   const lastWeek = o.applications_over_time[o.applications_over_time.length - 1];
-  assert.deepEqual(lastWeek, { bucket: '2026-09-28', approved: 1, pending: 1, declined: 0 });
+  assert.deepEqual(lastWeek, { bucket: '2026-09-28', approved: 1, pending: 1, declined: 0, withdrawn: 0 });
   assert.equal(o.kpis.avg_turnaround_days, 1);
+});
+
+test('withdrawn: own bucket, not open, not a decision', () => {
+  const w = { ...APPS[1], id: 'a4', status: 'withdrawn', stage: 'withdrawn', stage_history: [{ to: 'withdrawn', at: '2026-09-29T00:00:00Z' }] };
+  assert.equal(decisionAt(w), null);
+  const o = buildOverview({ applications: [APPS[0], w], staff: STAFF, period: '30d', now: NOW });
+  const lastWeek = o.applications_over_time[o.applications_over_time.length - 1];
+  assert.deepEqual(lastWeek, { bucket: '2026-09-28', approved: 1, pending: 0, declined: 0, withdrawn: 1 });
+  assert.equal(o.pipeline_by_stage.reduce((n, p) => n + p.count, 0), 0);
+  assert.equal(o.kpis.approval_rate, 100);
+  assert.equal(o.so_performance[0].withdrawn, 1);
 });
 
 test('buildOverview approval_rate is null with no decisions in range', () => {
