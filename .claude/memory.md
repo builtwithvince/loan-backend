@@ -111,3 +111,20 @@ Read this file at the start of every session. Append key decisions, discoveries,
 - **Data facts (2026-09-30):** 183 apps; status only pending/pending_sa_confirmation/approved (0 declined rows), so approval_rate reads 100%. `loan_type` is mixed case in the DB (lowercase it). The `tier` 'declined' band (44 rows) is a score band, not a declined status.
 - [ASSUMPTION] In-memory aggregation is fine at ~200 rows; move to SQL views/RPC past ~10k.
 - **Ops:** 7 test applications deleted with their files (archive `archived-test-applications-2026-09-30.json`). **Ralph Roque (CI officer) deactivated** (`is_active=false`, resigned). CI has no per-officer assignment (shared queue; `notifyTeamByRole('ci_officer')` emails all active CI officers), so nothing needed reassigning. His 110 completed assessments keep `interviewer='Rafael Roque'` as the audit record.
+
+---
+
+## 2026-11-09 — Weekly health check (branch `claude/gifted-mayer-djcilt`)
+
+- **Railway MCP NOT AUTHORIZED this session** → could not run steps 1–2 (deploy status, logs, HTTP error rate, CPU/mem/disk). Needs the Railway connector authorized in claude.ai connector settings to resume infra monitoring. Infra health is UNVERIFIED this week.
+- **Git/GitHub (green):** no open PRs, no unmerged fixes; branch in sync with `origin/main` (0/0). HEAD `3aca66c` (#10 withdrawn stage). Working tree clean.
+- **Tests (green):** full suite passes after a clean `npm install` — reporting 14, apply-passcode 6, file-count-cap 13, e2e-flow 176 = **209 passing, 0 failing**. (`smoke-live` skipped — needs live network/env.) Note: fresh container ships a PARTIAL `node_modules` (multer missing `./validate-limits`, `@supabase/supabase-js` absent) → tests error until `rm -rf node_modules && npm install`. Container artifact, not a code regression — reinforces the earlier note that committed `node_modules` is vestigial and should be gitignored/untracked.
+- **ISSUE — vulnerable deps regressed to 9 (`npm audit`: 1 critical, 6 high, 2 moderate).** Was 0 after the 2026-09-23 fix; newer CVEs since + a new critical. All fixable via **non-breaking** `npm audit fix` (dry-run shows no `--force` needed):
+  - **`proxy-addr` 1.1.0–2.0.7 (CRITICAL, transitive via Express): IP spoofing via IPv4-mapped IPv6 trust subnet (GHSA-jqcg-44mw-7w3h).** Directly relevant: `index.js:17` sets `trust proxy: 1` and the 3 public limiters (submit 10/min, access, search) key on `req.ip` → spoofing can bypass rate limits + poison the `[cors] blocked` / IP logs. Fixed by bumping Express 5.2.1→5.3.0 via audit fix.
+  - `multer` 2.0.0–2.4.0 (HIGH): DoS via pending async fileFilter after request teardown (GHSA-q7qp-rjg7-q26m). On the unauthenticated upload path. Fix → 2.5.0.
+  - `sharp` <0.35.5 (HIGH): librsvg CVE-2026-96889 via malicious images (GHSA-wq5f-xc86-pv6w). Every upload runs through `services/compress.js`. Fix → 0.35.5 (patch).
+  - `qs` 6.7.0–6.16.0 (MODERATE): `qs.stringify` arrayFormat 'comma' uncaught TypeError DoS.
+  - plus transitives rounding out to 9.
+  - **Remediation (NOT applied — awaiting go-ahead per the routine):** on this branch run `npm audit fix` → `npm audit` to 0 → run the 4 test files → smoke-test `services/compress.js` under sharp 0.35.5 → commit (only package.json/package-lock) → push branch. Reaches prod only on merge to `main` (auto-deploy, no test gate).
+- **Open ops item (carried from 2026-07-20, UNVERIFIED without Railway):** `CORS_ORIGINS` likely still unset on Railway → any frontend origin other than gr8lendingcorporation.com ± www silently blocked (no 500 since the #3 fix). Confirm from `[cors] blocked disallowed origin:` logs once Railway access is restored.
+- **Next (on go-ahead):** apply the dep fix, then Postman MCP UAT for the regression per the routine prompt.
