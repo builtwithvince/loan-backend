@@ -411,7 +411,7 @@ router.post('/submit', handleUpload, async (req, res) => {
 
     // Step 6 — Extract consent
     const consent_agreed = formData.consentAgreed === 'true' || formData.consentAgreed === true
-    const consent_agreed_at = new Date().toISOString()
+    const consent_agreed_at = consent_agreed ? new Date().toISOString() : null
 
     // Step 7 — Save to Supabase (files not yet uploaded → documents_incomplete
     // starts true so the pipeline can't advance until the background task fills
@@ -697,7 +697,7 @@ router.post('/submit-group', handleUpload, async (req, res) => {
     const upload_failures = uploadResults.length - file_metadata.length
 
     const consent_agreed = req.body.consentAgreed === 'true' || req.body.consentAgreed === true
-    const consent_agreed_at = new Date().toISOString()
+    const consent_agreed_at = consent_agreed ? new Date().toISOString() : null
 
     // Build one row per member — leader gets base ref, co-members get suffixed refs
     const base_reference_id = reference_id
