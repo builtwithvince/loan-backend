@@ -355,6 +355,7 @@ async function run() {
         groupName: 'FixVerify5Members',
         paymentTerm: '12',
         members: JSON.stringify(members),
+        consentAgreed: 'true',
       },
     });
 
@@ -402,6 +403,7 @@ async function run() {
         groupName: 'EightMemberGroup',
         paymentTerm: '12',
         members: JSON.stringify(members),
+        consentAgreed: 'true',
       },
     });
 

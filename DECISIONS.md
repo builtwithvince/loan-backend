@@ -346,3 +346,18 @@ Set **only** on the FinScore fast-path. A renewal that re-ran FinScore measured 
 - `/approve` (adjusted terms), `/override` and the SO confirmation link refuse a withdrawn row, so it cannot be brought back.
 
 **Not done:** the same direct-write paths can still bring a `declined` row back. That gap was already there and is out of scope here.
+
+---
+
+## 023 — Consent is required on every submit (2026-11-16)
+
+**Trigger:** the Personal, SME and AKAP forms never sent `consentAgreed` (Group and SBL didn't until FE `cd3bbd6`, 2026-05-29). 182 rows were stored as `consent_agreed=false` even though the checkbox has blocked submission on every form since FE `2929758` (2026-03-26), so those applicants were missing from `/api/admin/export/consent`. Meanwhile `consent_agreed_at` was stamped on every row.
+
+**Decision (operator):**
+- `/submit` and `/submit-group` refuse a body without `consentAgreed` true: `400 { status:'error', code:'consent_required', message }`. The check runs before any DB read, FinScore call or upload. The message avoids the words the FE reads as an upload error, so the forms show it as "Something Went Wrong … Nothing was saved", which is accurate.
+- `consent_agreed_at` is null when consent is false (PR #11, `ede0fbd`).
+- Backfill: the 182 rows were set to `consent_agreed=true`. `consent_agreed_at` was left as it was (the original submit time). Archive: `archived-consent-backfill-2026-11-16.json` (gitignored).
+
+**Order:** this refusal ships only after FE PR #9 (individual forms send `consentAgreed`) is live. Merged earlier, it would refuse every individual application.
+
+**Not done:** the FE doesn't branch on `code` yet, so the refusal shows the generic error title. A tab opened before the FE deploy will be refused once with a "refresh this page" message.
