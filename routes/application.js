@@ -93,6 +93,18 @@ function safePathSegment(value) {
   return cleaned || 'file'
 }
 
+// Consent is required on every submit (decision 023). The message avoids the
+// words the frontend reads as an upload error (size limit / exceed / MB / too
+// many files), so the form shows it as a plain error.
+function hasConsent(body) {
+  return body?.consentAgreed === 'true' || body?.consentAgreed === true
+}
+const CONSENT_REQUIRED = {
+  status: 'error',
+  code: 'consent_required',
+  message: 'Please tick the Terms and Conditions box before submitting. If it is already ticked, refresh this page and submit again.'
+}
+
 // First row per phone from rows already ordered newest first.
 function latestByPhone(rows) {
   const byPhone = new Map()
@@ -275,6 +287,8 @@ router.post('/submit', handleUpload, async (req, res) => {
   try {
     const formData = req.body
     const files = req.files || []
+    // Refused before any DB read, FinScore call or upload.
+    if (!hasConsent(formData)) return res.status(400).json(CONSENT_REQUIRED)
 
     // Four independent pre-check reads batched in one round trip (perf review
     // finding 5): SO validation, pending-duplicate check, prior-decline lookup,
@@ -410,7 +424,7 @@ router.post('/submit', handleUpload, async (req, res) => {
     const folderName = `${reference_id}_${safePathSegment(formData.firstName)}-${safePathSegment(formData.lastName)}`
 
     // Step 6 — Extract consent
-    const consent_agreed = formData.consentAgreed === 'true' || formData.consentAgreed === true
+    const consent_agreed = hasConsent(formData)
     const consent_agreed_at = consent_agreed ? new Date().toISOString() : null
 
     // Step 7 — Save to Supabase (files not yet uploaded → documents_incomplete
@@ -484,6 +498,8 @@ router.post('/submit', handleUpload, async (req, res) => {
 // Group / SBL multi-member submit route
 router.post('/submit-group', handleUpload, async (req, res) => {
   try {
+    // Refused before any DB read, FinScore call or upload.
+    if (!hasConsent(req.body)) return res.status(400).json(CONSENT_REQUIRED)
     const { loanType, totalLoanAmount, groupName } = req.body
     // Normalized key for type gates/lookups only (L1 parity with /submit's
     // preQualify). The raw `loanType` is still what gets stored on the row, so
@@ -696,7 +712,7 @@ router.post('/submit-group', handleUpload, async (req, res) => {
     const file_metadata = uploadResults.filter(Boolean)
     const upload_failures = uploadResults.length - file_metadata.length
 
-    const consent_agreed = req.body.consentAgreed === 'true' || req.body.consentAgreed === true
+    const consent_agreed = hasConsent(req.body)
     const consent_agreed_at = consent_agreed ? new Date().toISOString() : null
 
     // Build one row per member — leader gets base ref, co-members get suffixed refs
