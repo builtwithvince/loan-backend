@@ -111,3 +111,18 @@ Read this file at the start of every session. Append key decisions, discoveries,
 - **Data facts (2026-09-30):** 183 apps; status only pending/pending_sa_confirmation/approved (0 declined rows), so approval_rate reads 100%. `loan_type` is mixed case in the DB (lowercase it). The `tier` 'declined' band (44 rows) is a score band, not a declined status.
 - [ASSUMPTION] In-memory aggregation is fine at ~200 rows; move to SQL views/RPC past ~10k.
 - **Ops:** 7 test applications deleted with their files (archive `archived-test-applications-2026-09-30.json`). **Ralph Roque (CI officer) deactivated** (`is_active=false`, resigned). CI has no per-officer assignment (shared queue; `notifyTeamByRole('ci_officer')` emails all active CI officers), so nothing needed reassigning. His 110 completed assessments keep `interviewer='Rafael Roque'` as the audit record.
+
+---
+
+## 2026-11-16 — Weekly health check (branch `claude/gifted-mayer-p2z2hz`)
+
+- **Railway MCP NOT authorized this session** → could not check deployment status, runtime logs, HTTP error rate, or CPU/mem/disk (steps 1–2 of the routine). Needs user to re-authorize the Railway connector in claude.ai connector settings. Supabase MCP also did not expose tools this session (stuck "connecting"), so no DB advisories/logs either.
+- **Git/GitHub — GREEN:** branch level with `main` (HEAD `3aca66c`, "withdrawn stage" #10). No open PRs, no open issues. No unmerged critical fixes pending.
+- **Tests — GREEN (where runnable):** `reporting.test.js` 14/14, `apply-passcode.test.js` 6/6 pass. `e2e-flow.test.js` + `file-count-cap.test.js` error out with `Cannot find module '@supabase/supabase-js'` — this is the partial-node_modules checkout (deploy uses `npm ci` from lockfile, per 2026-09-23), NOT a real failure or prod issue.
+- **ISSUE — `npm audit`: 9 vulns (1 critical, 6 high, 2 moderate).** Newly-disclosed since the 2026-09-23 clean. All on the unauthenticated upload / outbound-API paths:
+  - `proxy-addr` **CRITICAL** — IP spoofing via IPv4-mapped IPv6 trust subnet. Load-bearing: `app.set('trust proxy', 1)` + `express-rate-limit` key on client IP, so a spoofed IP could bypass the 10/min submit + 30/min borrower-search limits on public endpoints.
+  - `axios` HIGH — redirect-based SSRF (`maxRedirects:0` not enforced by fetch adapter). axios is the client for FinScore/Loandisk/ZeptoMail.
+  - `sharp` <0.35.5 HIGH — librsvg CVE-2026-96889 (image processing on unauth `/submit`, `/submit-group`, `/reports/problem`).
+  - `multer` HIGH (async fileFilter DoS), `body-parser` HIGH, `follow-redirects` high/moderate, `qs` moderate.
+  - **Fix:** plain `npm audit fix` clears all 9 — dry-run shows "added 57, changed 7", no major/SemVer-breaking bumps. Same playbook as 2026-09-23. **Not applied — awaiting go-ahead.** After applying: smoke-test `services/compress.js` under the new sharp, push to branch, merge to `main` (auto-deploys, no test gate).
+- **Carried ops item (still open from 2026-07-20 / 09-21):** `CORS_ORIGINS` unset on Railway — unverifiable without Railway access this cycle.
